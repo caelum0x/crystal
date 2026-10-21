@@ -5,6 +5,7 @@ import { existsSync } from 'fs';
 import type { AppServices } from './types';
 import type { CreateSessionRequest } from '../types/session';
 import { getCrystalSubdirectory } from '../utils/crystalDirectory';
+import { isSafeSessionId, getSafeImageExtension } from '../utils/artifactPathSafety';
 import { convertDbFolderToFolder } from './folders';
 import { panelManager } from '../services/panelManager';
 import { 
@@ -1612,10 +1613,18 @@ export function registerSessionHandlers(ipcMain: IpcMain, services: AppServices)
   // Save images for a session
   ipcMain.handle('sessions:save-images', async (_event, sessionId: string, images: Array<{ name: string; dataUrl: string; type: string }>) => {
     try {
+      // sessionId is used to build a file-system path below, so it must be
+      // validated before anything else: a crafted value like
+      // 'pending_../../../../etc' would otherwise let the artifacts
+      // directory escape outside CRYSTAL_DIR.
+      if (!isSafeSessionId(sessionId)) {
+        throw new Error('Invalid session ID');
+      }
+
       // For pending sessions (those created before the actual session), we still need to save the files
       // Check if this is a pending session ID (starts with 'pending_')
       const isPendingSession = sessionId.startsWith('pending_');
-      
+
       if (!isPendingSession) {
         // For real sessions, verify it exists
         const session = await sessionManager.getSession(sessionId);
@@ -1636,7 +1645,10 @@ export function registerSessionHandlers(ipcMain: IpcMain, services: AppServices)
         // Generate unique filename
         const timestamp = Date.now();
         const randomStr = Math.random().toString(36).substring(2, 9);
-        const extension = image.type.split('/')[1] || 'png';
+        // Derived from an allow-list, not from the raw `image.type` string,
+        // so a crafted MIME type cannot smuggle path separators or `..`
+        // traversal segments into the filename.
+        const extension = getSafeImageExtension(image.type);
         const filename = `${timestamp}_${randomStr}.${extension}`;
         const filePath = path.join(imagesDir, filename);
 
@@ -1661,10 +1673,16 @@ export function registerSessionHandlers(ipcMain: IpcMain, services: AppServices)
   // Save large text for a session
   ipcMain.handle('sessions:save-large-text', async (_event, sessionId: string, text: string) => {
     try {
+      // See the matching check in sessions:save-images: sessionId feeds
+      // directly into a file-system path and must be validated first.
+      if (!isSafeSessionId(sessionId)) {
+        throw new Error('Invalid session ID');
+      }
+
       // For pending sessions (those created before the actual session), we still need to save the files
       // Check if this is a pending session ID (starts with 'pending_')
       const isPendingSession = sessionId.startsWith('pending_');
-      
+
       if (!isPendingSession) {
         // For real sessions, verify it exists
         const session = await sessionManager.getSession(sessionId);
